@@ -1,7 +1,131 @@
-import { fetchRepoTree, fetchFileContent } from './github.js';
-import { isTextFile } from './utils.js';
-import { html } from './ui.js';
+// --- UTILS ---
+function isTextFile(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  const textExtensions = [
+    'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'json', 'md', 'txt', 'csv',
+    'py', 'rb', 'go', 'rs', 'php', 'java', 'c', 'cpp', 'h', 'hpp',
+    'sh', 'yml', 'yaml', 'xml', 'toml', 'ini', 'sql', 'gs'
+  ];
+  return textExtensions.includes(ext);
+}
 
+// --- GITHUB API HELPERS ---
+async function fetchRepoTree(owner, repo, branch) {
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Cloudflare-Worker-GithubFlattener'
+    }
+  });
+  
+  if (!res.ok && res.status !== 404) {
+      throw new Error(`Failed to fetch repository tree: ${res.statusText}`);
+  }
+  
+  return res.json();
+}
+
+async function fetchFileContent(owner, repo, branch, path) {
+  const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+  const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Cloudflare-Worker-GithubFlattener'
+      }
+  });
+  
+  if (!res.ok) return null;
+  return res.text();
+}
+
+// --- UI HTML ---
+const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Flattener</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    button { padding: 10px 20px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #333; }
+    button:disabled { background: #888; cursor: not-allowed; }
+    #status { margin-top: 15px; font-weight: bold; color: #0056b3; }
+    textarea { width: 100%; height: 500px; margin-top: 10px; padding: 15px; font-family: monospace; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; white-space: pre; background: #f8f9fa; }
+  </style>
+</head>
+<body>
+  <h1>GitHub Flattener API</h1>
+  <form id="form">
+    <div class="form-group">
+      <label for="url">GitHub Repository URL</label>
+      <input type="url" id="url" placeholder="https://github.com/owner/repo" required />
+    </div>
+    <div class="form-group">
+      <label for="branch">Branch (defaults to main)</label>
+      <input type="text" id="branch" placeholder="main" />
+    </div>
+    <button type="submit" id="btn">Compile Repository</button>
+  </form>
+  
+  <div id="status">Ready.</div>
+  <textarea id="output" readonly placeholder="Output will stream here..."></textarea>
+  
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const url = document.getElementById('url').value;
+      const branch = document.getElementById('branch').value || 'main';
+      const output = document.getElementById('output');
+      const status = document.getElementById('status');
+      const btn = document.getElementById('btn');
+      
+      output.value = '';
+      status.innerText = 'Fetching repository structure...';
+      status.style.color = '#0056b3';
+      btn.disabled = true;
+      
+      try {
+        const res = await fetch('/api/flatten?url=' + encodeURIComponent(url) + '&branch=' + encodeURIComponent(branch));
+        
+        if (!res.ok) {
+          status.innerText = 'Error occurred.';
+          status.style.color = 'red';
+          output.value = 'Error: ' + await res.text();
+          btn.disabled = false;
+          return;
+        }
+
+        status.innerText = 'Compiling files in real-time...';
+        
+        // Read the streaming response chunks as they arrive
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          output.value += decoder.decode(value, { stream: true });
+          output.scrollTop = output.scrollHeight; // Auto-scroll to bottom
+        }
+        
+        status.innerText = '✅ Compilation complete! You can copy the text below.';
+        status.style.color = 'green';
+      } catch (err) {
+        status.innerText = 'Network error occurred.';
+        status.style.color = 'red';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+// --- WORKER ROUTING ---
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -32,21 +156,37 @@ export default {
 
         const files = treeData.tree.filter(item => item.type === 'blob' && isTextFile(item.path));
         
-        let output = `Repository: ${owner}/${repo}\nBranch: ${branch}\n\n`;
+        // Set up a TransformStream to stream data to the client
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
 
-        const fetchPromises = files.map(async (file) => {
-          const content = await fetchFileContent(owner, repo, branch, file.path);
-          if (content !== null) {
-             return `\n\n================================================\nFile: ${file.path}\n================================================\n${content}`;
+        // Run the fetching process asynchronously without blocking the response creation
+        ctx.waitUntil((async () => {
+          try {
+            await writer.write(encoder.encode(`Repository: ${owner}/${repo}\nBranch: ${branch}\n`));
+            
+            for (const file of files) {
+              const content = await fetchFileContent(owner, repo, branch, file.path);
+              if (content !== null) {
+                const chunk = `\n\n================================================\nFile: ${file.path}\n================================================\n${content}`;
+                await writer.write(encoder.encode(chunk));
+              }
+            }
+          } catch (error) {
+            await writer.write(encoder.encode(`\n\nError fetching files: ${error.message}`));
+          } finally {
+            await writer.close();
           }
-          return '';
-        });
+        })());
 
-        const contents = await Promise.all(fetchPromises);
-        output += contents.join('');
-
-        return new Response(output, {
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        // Return the readable end of the stream immediately
+        return new Response(readable, {
+          headers: { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          }
         });
 
       } catch (error) {
