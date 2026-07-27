@@ -52,7 +52,12 @@ const html = `<!DOCTYPE html>
     button { padding: 10px 20px; background: #000; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
     button:hover { background: #333; }
     button:disabled { background: #888; cursor: not-allowed; }
-    #status { margin-top: 15px; font-weight: bold; color: #0056b3; }
+    
+    .status-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; }
+    #status { font-weight: bold; color: #0056b3; }
+    #copyBtn { background: #28a745; display: none; }
+    #copyBtn:hover { background: #218838; }
+    
     textarea { width: 100%; height: 500px; margin-top: 10px; padding: 15px; font-family: monospace; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; white-space: pre; background: #f8f9fa; }
   </style>
 </head>
@@ -70,22 +75,43 @@ const html = `<!DOCTYPE html>
     <button type="submit" id="btn">Compile Repository</button>
   </form>
   
-  <div id="status">Ready.</div>
+  <div class="status-bar">
+    <div id="status">Ready.</div>
+    <button type="button" id="copyBtn">Copy to Clipboard</button>
+  </div>
   <textarea id="output" readonly placeholder="Output will stream here..."></textarea>
   
   <script>
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+    const btn = document.getElementById('btn');
+    const copyBtn = document.getElementById('copyBtn');
+
+    // Copy Button Logic
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(output.value);
+        const originalText = copyBtn.innerText;
+        copyBtn.innerText = '✅ Copied!';
+        setTimeout(() => {
+          copyBtn.innerText = originalText;
+        }, 2000);
+      } catch (err) {
+        alert('Failed to copy text. Your browser might block this action.');
+      }
+    });
+
+    // Form Submission Logic
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const url = document.getElementById('url').value;
       const branch = document.getElementById('branch').value || 'main';
-      const output = document.getElementById('output');
-      const status = document.getElementById('status');
-      const btn = document.getElementById('btn');
       
       output.value = '';
       status.innerText = 'Fetching repository structure...';
       status.style.color = '#0056b3';
       btn.disabled = true;
+      copyBtn.style.display = 'none'; // Hide copy button while loading
       
       try {
         const res = await fetch('/api/flatten?url=' + encodeURIComponent(url) + '&branch=' + encodeURIComponent(branch));
@@ -112,8 +138,10 @@ const html = `<!DOCTYPE html>
           output.scrollTop = output.scrollHeight; // Auto-scroll to bottom
         }
         
-        status.innerText = '✅ Compilation complete! You can copy the text below.';
+        status.innerText = '✅ Compilation complete!';
         status.style.color = 'green';
+        copyBtn.style.display = 'block'; // Show copy button when done
+        
       } catch (err) {
         status.innerText = 'Network error occurred.';
         status.style.color = 'red';
