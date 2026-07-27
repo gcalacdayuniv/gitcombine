@@ -55,8 +55,12 @@ const html = `<!DOCTYPE html>
     
     .status-bar { display: flex; justify-content: space-between; align-items: center; margin-top: 15px; }
     #status { font-weight: bold; color: #0056b3; }
+    
+    .action-buttons { display: flex; gap: 10px; }
     #copyBtn { background: #28a745; display: none; }
     #copyBtn:hover { background: #218838; }
+    #downloadBtn { background: #007bff; display: none; }
+    #downloadBtn:hover { background: #0056b3; }
     
     textarea { width: 100%; height: 500px; margin-top: 10px; padding: 15px; font-family: monospace; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; white-space: pre; background: #f8f9fa; }
   </style>
@@ -77,7 +81,10 @@ const html = `<!DOCTYPE html>
   
   <div class="status-bar">
     <div id="status">Ready.</div>
-    <button type="button" id="copyBtn">Copy to Clipboard</button>
+    <div class="action-buttons">
+      <button type="button" id="copyBtn">Copy to Clipboard</button>
+      <button type="button" id="downloadBtn">Download .txt</button>
+    </div>
   </div>
   <textarea id="output" readonly placeholder="Output will stream here..."></textarea>
   
@@ -86,6 +93,7 @@ const html = `<!DOCTYPE html>
     const status = document.getElementById('status');
     const btn = document.getElementById('btn');
     const copyBtn = document.getElementById('copyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
 
     // Copy Button Logic
     copyBtn.addEventListener('click', async () => {
@@ -101,6 +109,24 @@ const html = `<!DOCTYPE html>
       }
     });
 
+    // Download Button Logic
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([output.value], { type: 'text/plain' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      
+      // Determine filename from the input URL
+      const repoUrl = document.getElementById('url').value;
+      const repoName = repoUrl.split('/').filter(Boolean).pop() || 'repository';
+      a.download = repoName + '-flattened.txt';
+      
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    });
+
     // Form Submission Logic
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -111,7 +137,8 @@ const html = `<!DOCTYPE html>
       status.innerText = 'Fetching repository structure...';
       status.style.color = '#0056b3';
       btn.disabled = true;
-      copyBtn.style.display = 'none'; // Hide copy button while loading
+      copyBtn.style.display = 'none';
+      downloadBtn.style.display = 'none';
       
       try {
         const res = await fetch('/api/flatten?url=' + encodeURIComponent(url) + '&branch=' + encodeURIComponent(branch));
@@ -140,7 +167,8 @@ const html = `<!DOCTYPE html>
         
         status.innerText = '✅ Compilation complete!';
         status.style.color = 'green';
-        copyBtn.style.display = 'block'; // Show copy button when done
+        copyBtn.style.display = 'block';
+        downloadBtn.style.display = 'block';
         
       } catch (err) {
         status.innerText = 'Network error occurred.';
